@@ -32,5 +32,10 @@
   "Temperature": "生成温度",
   "Precise": "保守",
   "Neutral": "中立",
-  "Creative": "随性"
+  "Creative": "随性",
+  "MaxTokens": "数据容量",
+  "Controls the maximum length of the model's response. Higher values allow for longer responses but may increase processing time.": "控制模型回复的最大长度。较高的值允许更长的回复，但可能会增加处理时间。",
+  "Concise": "简洁",
+  "Balanced": "均衡",
+  "Detailed": "详细"
 }
