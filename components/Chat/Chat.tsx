@@ -64,6 +64,7 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showScrollDownButton, setShowScrollDownButton] =
     useState<boolean>(false);
+  const [completedMetrics, setCompletedMetrics] = useState<PerformanceMetrics | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -71,179 +72,205 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
 
   const handleSend = useCallback(
     async (message: Message, deleteCount = 0, plugin: Plugin | null = null) => {
-      if (selectedConversation) {
-        let updatedConversation: Conversation;
-        if (deleteCount) {
-          const updatedMessages = [...selectedConversation.messages];
-          for (let i = 0; i < deleteCount; i++) {
-            updatedMessages.pop();
-          }
-          updatedConversation = {
-            ...selectedConversation,
-            messages: [...updatedMessages, message],
-          };
-        } else {
-          updatedConversation = {
-            ...selectedConversation,
-            messages: [...selectedConversation.messages, message],
-          };
-        }
-        homeDispatch({
-          field: 'selectedConversation',
-          value: updatedConversation,
-        });
-        homeDispatch({ field: 'loading', value: true });
-        homeDispatch({ field: 'messageIsStreaming', value: true });
-        const chatBody: ChatBody = {
-          model: updatedConversation.model,
-          messages: updatedConversation.messages,
-          key: apiKey,
-          prompt: updatedConversation.prompt,
-          temperature: updatedConversation.temperature,
-        };
-        const endpoint = getEndpoint(plugin);
-        let body;
-        if (!plugin) {
-          body = JSON.stringify(chatBody);
-        } else {
-          body = JSON.stringify({
-            ...chatBody,
-            googleAPIKey: pluginKeys
-              .find((key) => key.pluginId === 'google-search')
-              ?.requiredKeys.find((key) => key.key === 'GOOGLE_API_KEY')?.value,
-            googleCSEId: pluginKeys
-              .find((key) => key.pluginId === 'google-search')
-              ?.requiredKeys.find((key) => key.key === 'GOOGLE_CSE_ID')?.value,
-          });
-        }
-        const controller = new AbortController();
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
-          body,
-        });
-        if (!response.ok) {
-          homeDispatch({ field: 'loading', value: false });
-          homeDispatch({ field: 'messageIsStreaming', value: false });
-          toast.error(response.statusText);
-          return;
-        }
-        const data = response.body;
-        if (!data) {
-          homeDispatch({ field: 'loading', value: false });
-          homeDispatch({ field: 'messageIsStreaming', value: false });
-          return;
-        }
-        if (!plugin) {
-          if (updatedConversation.messages.length === 1) {
-            const { content } = message;
-            const customName =
-              content.length > 30 ? content.substring(0, 30) + '...' : content;
+      const startTime = Date.now();
+      let firstTokenTime: number | null = null;
+      let totalTokens = 0;
+      
+      try {
+        if (selectedConversation) {
+          let updatedConversation: Conversation;
+          if (deleteCount) {
+            const updatedMessages = [...selectedConversation.messages];
+            for (let i = 0; i < deleteCount; i++) {
+              updatedMessages.pop();
+            }
             updatedConversation = {
-              ...updatedConversation,
-              name: customName,
+              ...selectedConversation,
+              messages: [...updatedMessages, message],
+            };
+          } else {
+            updatedConversation = {
+              ...selectedConversation,
+              messages: [...selectedConversation.messages, message],
             };
           }
-          homeDispatch({ field: 'loading', value: false });
-          const reader = data.getReader();
-          const decoder = new TextDecoder();
-          let done = false;
-          let isFirst = true;
-          let text = '';
-          while (!done) {
-            if (stopConversationRef.current === true) {
-              controller.abort();
-              done = true;
-              break;
-            }
-            const { value, done: doneReading } = await reader.read();
-            done = doneReading;
-            const chunkValue = decoder.decode(value);
-            text += chunkValue;
-            if (isFirst) {
-              isFirst = false;
-              const updatedMessages: Message[] = [
-                ...updatedConversation.messages,
-                { role: 'assistant', content: chunkValue },
-              ];
-              updatedConversation = {
-                ...updatedConversation,
-                messages: updatedMessages,
-              };
-              homeDispatch({
-                field: 'selectedConversation',
-                value: updatedConversation,
-              });
-            } else {
-              const updatedMessages: Message[] =
-                updatedConversation.messages.map((message, index) => {
-                  if (index === updatedConversation.messages.length - 1) {
-                    return {
-                      ...message,
-                      content: text,
-                    };
-                  }
-                  return message;
-                });
-              updatedConversation = {
-                ...updatedConversation,
-                messages: updatedMessages,
-              };
-              homeDispatch({
-                field: 'selectedConversation',
-                value: updatedConversation,
-              });
-            }
-          }
-          saveConversation(updatedConversation);
-          const updatedConversations: Conversation[] = conversations.map(
-            (conversation) => {
-              if (conversation.id === selectedConversation.id) {
-                return updatedConversation;
-              }
-              return conversation;
-            },
-          );
-          if (updatedConversations.length === 0) {
-            updatedConversations.push(updatedConversation);
-          }
-          homeDispatch({ field: 'conversations', value: updatedConversations });
-          saveConversations(updatedConversations);
-          homeDispatch({ field: 'messageIsStreaming', value: false });
-        } else {
-          const { answer } = await response.json();
-          const updatedMessages: Message[] = [
-            ...updatedConversation.messages,
-            { role: 'assistant', content: answer },
-          ];
-          updatedConversation = {
-            ...updatedConversation,
-            messages: updatedMessages,
-          };
           homeDispatch({
             field: 'selectedConversation',
-            value: updateConversation,
+            value: updatedConversation,
           });
-          saveConversation(updatedConversation);
-          const updatedConversations: Conversation[] = conversations.map(
-            (conversation) => {
-              if (conversation.id === selectedConversation.id) {
-                return updatedConversation;
-              }
-              return conversation;
-            },
-          );
-          if (updatedConversations.length === 0) {
-            updatedConversations.push(updatedConversation);
+          homeDispatch({ field: 'loading', value: true });
+          homeDispatch({ field: 'messageIsStreaming', value: true });
+          const chatBody: ChatBody = {
+            model: updatedConversation.model,
+            messages: updatedConversation.messages,
+            key: apiKey,
+            prompt: updatedConversation.prompt,
+            temperature: updatedConversation.temperature,
+          };
+          const endpoint = getEndpoint(plugin);
+          let body;
+          if (!plugin) {
+            body = JSON.stringify(chatBody);
+          } else {
+            body = JSON.stringify({
+              ...chatBody,
+              googleAPIKey: pluginKeys
+                .find((key) => key.pluginId === 'google-search')
+                ?.requiredKeys.find((key) => key.key === 'GOOGLE_API_KEY')?.value,
+              googleCSEId: pluginKeys
+                .find((key) => key.pluginId === 'google-search')
+                ?.requiredKeys.find((key) => key.key === 'GOOGLE_CSE_ID')?.value,
+            });
           }
-          homeDispatch({ field: 'conversations', value: updatedConversations });
-          saveConversations(updatedConversations);
-          homeDispatch({ field: 'loading', value: false });
-          homeDispatch({ field: 'messageIsStreaming', value: false });
+          const controller = new AbortController();
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            signal: controller.signal,
+            body,
+          });
+          if (!response.ok) {
+            homeDispatch({ field: 'loading', value: false });
+            homeDispatch({ field: 'messageIsStreaming', value: false });
+            toast.error(response.statusText);
+            return;
+          }
+          const data = response.body;
+          if (!data) {
+            homeDispatch({ field: 'loading', value: false });
+            homeDispatch({ field: 'messageIsStreaming', value: false });
+            return;
+          }
+          if (!plugin) {
+            if (updatedConversation.messages.length === 1) {
+              const { content } = message;
+              const customName =
+                content.length > 30 ? content.substring(0, 30) + '...' : content;
+              updatedConversation = {
+                ...updatedConversation,
+                name: customName,
+              };
+            }
+            homeDispatch({ field: 'loading', value: false });
+            const reader = data.getReader();
+            const decoder = new TextDecoder();
+            let done = false;
+            let isFirst = true;
+            let text = '';
+            while (!done) {
+              if (stopConversationRef.current === true) {
+                controller.abort();
+                done = true;
+                break;
+              }
+              const { value, done: doneReading } = await reader.read();
+              done = doneReading;
+              const chunkValue = decoder.decode(value);
+              
+              if (!firstTokenTime && chunkValue.length > 0) {
+                firstTokenTime = Date.now();
+              }
+              
+              text += chunkValue;
+              totalTokens = Math.ceil(text.length / 4); // 估算 token 数
+              if (isFirst) {
+                isFirst = false;
+                const updatedMessages: Message[] = [
+                  ...updatedConversation.messages,
+                  { role: 'assistant', content: chunkValue },
+                ];
+                updatedConversation = {
+                  ...updatedConversation,
+                  messages: updatedMessages,
+                };
+                homeDispatch({
+                  field: 'selectedConversation',
+                  value: updatedConversation,
+                });
+              } else {
+                const updatedMessages: Message[] =
+                  updatedConversation.messages.map((message, index) => {
+                    if (index === updatedConversation.messages.length - 1) {
+                      return {
+                        ...message,
+                        content: text,
+                      };
+                    }
+                    return message;
+                  });
+                updatedConversation = {
+                  ...updatedConversation,
+                  messages: updatedMessages,
+                };
+                homeDispatch({
+                  field: 'selectedConversation',
+                  value: updatedConversation,
+                });
+              }
+            }
+            saveConversation(updatedConversation);
+            const updatedConversations: Conversation[] = conversations.map(
+              (conversation) => {
+                if (conversation.id === selectedConversation.id) {
+                  return updatedConversation;
+                }
+                return conversation;
+              },
+            );
+            if (updatedConversations.length === 0) {
+              updatedConversations.push(updatedConversation);
+            }
+            homeDispatch({ field: 'conversations', value: updatedConversations });
+            saveConversations(updatedConversations);
+            homeDispatch({ field: 'messageIsStreaming', value: false });
+          } else {
+            const { answer } = await response.json();
+            const updatedMessages: Message[] = [
+              ...updatedConversation.messages,
+              { role: 'assistant', content: answer },
+            ];
+            updatedConversation = {
+              ...updatedConversation,
+              messages: updatedMessages,
+            };
+            homeDispatch({
+              field: 'selectedConversation',
+              value: updateConversation,
+            });
+            saveConversation(updatedConversation);
+            const updatedConversations: Conversation[] = conversations.map(
+              (conversation) => {
+                if (conversation.id === selectedConversation.id) {
+                  return updatedConversation;
+                }
+                return conversation;
+              },
+            );
+            if (updatedConversations.length === 0) {
+              updatedConversations.push(updatedConversation);
+            }
+            homeDispatch({ field: 'conversations', value: updatedConversations });
+            saveConversations(updatedConversations);
+            homeDispatch({ field: 'loading', value: false });
+            homeDispatch({ field: 'messageIsStreaming', value: false });
+          }
         }
+
+        const endTime = Date.now();
+        const metrics: PerformanceMetrics = {
+          ttft: (firstTokenTime! - startTime) / 1000, // 转换为秒
+          tps: totalTokens / ((endTime - startTime) / 1000),
+          totalTokens,
+          totalTime: (endTime - startTime) / 1000
+        };
+
+        setCompletedMetrics(metrics);
+      } catch (error) {
+        homeDispatch({ field: 'loading', value: false });
+        homeDispatch({ field: 'messageIsStreaming', value: false });
+        toast.error('An error occurred while sending the message.');
       }
     },
     [
@@ -491,6 +518,31 @@ export const Chat = memo(({ stopConversationRef }: Props) => {
                 ))}
 
                 {loading && <ChatLoader />}
+
+                {!messageIsStreaming && completedMetrics && (
+                  <div className="px-4 py-2 flex justify-end bg-gray-50 dark:bg-[#444654] border-b border-black/10 dark:border-gray-900/50">
+                    <div className="text-xs text-gray-500 dark:text-gray-400 flex space-x-4">
+                      <div 
+                        className="flex items-center" 
+                        title={t('Time to first token')}
+                      >
+                        <span className="font-medium">TTFT:</span>
+                        <span className="ml-1">
+                          {completedMetrics.ttft.toFixed(2)} {t('seconds')}
+                        </span>
+                      </div>
+                      <div 
+                        className="flex items-center"
+                        title={t('Tokens per second')}
+                      >
+                        <span className="font-medium">TPS:</span>
+                        <span className="ml-1">
+                          {Math.round(completedMetrics.tps)} {t('tokens/second')}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div
                   className="h-[162px] bg-white dark:bg-[#343541]"
